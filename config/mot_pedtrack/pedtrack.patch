@@ -1,0 +1,134 @@
+diff -ruN a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp
+--- a/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp	2026-11-04 11:11:40.206613060 +0900
++++ b/include/autoware/multi_object_tracker/tracker/trackers/tracker_base.hpp	2026-11-04 11:11:40.207613037 +0900
+@@ -57,6 +57,8 @@
+   // (channel_info.trust_extension); partial observations (clusters/corners) leave it unchanged.
+   // Overlap pruning demotes trackers that are stale on full measurements.
+   rclcpp::Time last_fully_measured_time_;
++  // pedestrian persistence (CARLA demo patch): time of the last existence decay step
++  rclcpp::Time last_decay_time_;
+   std::vector<types::ExistenceProbability> existence_probabilities_;
+   float total_existence_probability_;
+   std::vector<classes::Classification> classification_;
+diff -ruN a/lib/tracker/trackers/tracker_base.cpp b/lib/tracker/trackers/tracker_base.cpp
+--- a/lib/tracker/trackers/tracker_base.cpp	2026-11-04 13:39:18.837865094 +0900
++++ b/lib/tracker/trackers/tracker_base.cpp	2026-11-04 13:39:18.838865071 +0900
+@@ -20,6 +20,8 @@
+ #include <autoware_utils_geometry/geometry.hpp>
+ 
+ #include <algorithm>
++#include <cstdlib>
++#include <string>
+ #include <cmath>
+ #include <limits>
+ #include <vector>
+@@ -48,6 +50,40 @@
+   const float decay_rate = log(0.5f) / 0.5f;  // half-life (50% decay) of 0.5s
+   return std::max(prior * std::exp(decay_rate * delta_time), minimum_probability);
+ }
++
++// CARLA demo patch (autoware-pc-setup aw_overrides/mot_pedtrack): a pedestrian seen in only some lidar / camera frames
++// (30-50 m, scores 0.25-0.45) never became a track: every channel message without it decayed the existence again from
++// the last measurement (compounding, 3 channels at 10 Hz), and its low scores could not lift the existence over 0.5.
++// For PEDESTRIAN trackers only: decay once per elapsed time (half-life AW_PED_HALFLIFE s), detections count with a score
++// of at least AW_PED_SCORE, a track is published after AW_PED_MIN_HITS measurements and up to a position variance of
++// AW_PED_MAX_COV m2 (the camera's range is uncertain). AW_PED_TRACK=0: upstream.
++struct PedTrackConfig
++{
++  bool on{true};
++  float half_life{1.0f};
++  float min_score{0.75f};
++  int min_hits{3};
++  double max_cov{0.0};  // [m2] a pedestrian track is published up to this position variance (0: upstream bound)
++};
++const PedTrackConfig & pedTrackConfig()
++{
++  static const PedTrackConfig cfg = [] {
++    PedTrackConfig c;
++    if (const char * e = std::getenv("AW_PED_TRACK")) c.on = std::string(e) != "0";
++    if (const char * e = std::getenv("AW_PED_HALFLIFE")) c.half_life = std::stof(e);
++    if (const char * e = std::getenv("AW_PED_SCORE")) c.min_score = std::stof(e);
++    if (const char * e = std::getenv("AW_PED_MIN_HITS")) c.min_hits = std::stoi(e);
++    if (const char * e = std::getenv("AW_PED_MAX_COV")) c.max_cov = std::stod(e);
++    return c;
++  }();
++  return cfg;
++}
++bool isPedestrian(const std::vector<autoware::multi_object_tracker::classes::Classification> & c)
++{
++  return pedTrackConfig().on && !c.empty() &&
++         autoware::multi_object_tracker::classes::getHighestProbLabel(c) ==
++           autoware::multi_object_tracker::classes::Label::PEDESTRIAN;
++}
+ }  // namespace
+ 
+ namespace autoware::multi_object_tracker
+@@ -62,6 +98,7 @@
+   // trackers start stale on the full-measurement clock.
+   last_fully_measured_time_(
+     detected_object.trust_extension ? time : rclcpp::Time(0, 0, time.get_clock_type())),
++  last_decay_time_(time),
+   channel_index_(detected_object.channel_index),
+   existence_probability_(detected_object.existence_probability),
+   kinematics_(detected_object.kinematics),
+@@ -178,12 +215,16 @@
+     }
+ 
+     // update total existence probability
++    const float score = isPedestrian(classification_)
++                          ? std::max(object.existence_probability, pedTrackConfig().min_score)
++                          : object.existence_probability;
+     total_existence_probability_ = updateProbability(
+-      total_existence_probability_, object.existence_probability * probability_true_detection,
++      total_existence_probability_, score * probability_true_detection,
+       probability_false_detection);
+   }
+ 
+   last_update_with_measurement_time_ = measurement_time;
++  if (measurement_time > last_decay_time_) last_decay_time_ = measurement_time;
+ 
+   // Update classification
+   if (
+@@ -260,7 +301,17 @@
+     for (auto & prob : existence_probabilities_) {
+       prob.existence_probability = decayProbability(prob.existence_probability, delta_time);
+     }
+-    total_existence_probability_ = decayProbability(total_existence_probability_, delta_time);
++    if (isPedestrian(classification_)) {
++      // once per elapsed time, not again from the last measurement at every channel message
++      const float dt = std::max(0.0, (timestamp - last_decay_time_).seconds());
++      if (timestamp > last_decay_time_) last_decay_time_ = timestamp;
++      total_existence_probability_ = std::max(
++        total_existence_probability_ *
++          std::exp(std::log(0.5f) / pedTrackConfig().half_life * dt),
++        0.001f);
++    } else {
++      total_existence_probability_ = decayProbability(total_existence_probability_, delta_time);
++    }
+   }
+ 
+   return true;
+@@ -488,6 +539,9 @@
+   if (count < 2) {
+     return false;
+   }
++  if (isPedestrian(classification_) && count < pedTrackConfig().min_hits) {
++    return false;
++  }
+   rclcpp::Time time_to_check;
+   if (!time) {
+     // add 200ms extrapolation time to the latest state time (motion model)
+@@ -517,6 +571,13 @@
+   if (getTotalExistenceProbability() > 0.50 && major_axis_sq < adaptive_threshold) {
+     return true;
+   }
++  // a pedestrian placed by the camera alone (the bbox locator: range variance ~8 m2 at 25 m, ~19 m2 at 40 m) never got
++  // under the ~2 m2 bound above, so a child the camera saw from 35 m appeared only once the lidar found it at ~11 m
++  if (
++    isPedestrian(classification_) && pedTrackConfig().max_cov > 0.0 &&
++    getTotalExistenceProbability() > 0.50 && major_axis_sq < pedTrackConfig().max_cov) {
++    return true;
++  }
+ 
+   return false;
+ }

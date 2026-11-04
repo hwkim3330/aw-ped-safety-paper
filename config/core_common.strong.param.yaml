@@ -1,0 +1,19 @@
+# BRAKE=strong (run_autoware_carla.sh): the emergency envelope -4 m/s2, -3 m/s3 instead of -2.5 / -1.5 -- with those
+# the car needed ~18-20 m from 28 km/h and hit a pedestrian stepping out 3.2 s ahead even when braking early (2026-10-30)
+/**:
+  ros__parameters:
+    max_vel: 11.11          # max velocity limit [m/s]
+
+    # constraints param for normal driving
+    normal:
+      min_acc: -1.0         # min deceleration [m/ss]
+      max_acc: 1.0          # max acceleration [m/ss]
+      min_jerk: -1.0        # min jerk [m/sss]
+      max_jerk: 1.0         # max jerk [m/sss]
+
+    # constraints to be observed
+    limit:
+      min_acc: -4.0         # min deceleration limit [m/ss]
+      max_acc: 1.0          # max acceleration limit [m/ss]
+      min_jerk: -3.0        # min jerk limit [m/sss]
+      max_jerk: 1.5         # max jerk limit [m/sss]

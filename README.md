@@ -18,9 +18,14 @@ Working notes + code for a short paper (to be written from this repo).
 - Negative results: shorter run_out stop delay/larger margin (round 6, worse); YOLOX-sPlus alone (labelled children UNKNOWN).
 
 ## Open / to state as limitations
-- Child result is one 15-run round; a ≥50-run confirmation and cut-in / lead-brake / patrol regression checks with the 45° camera are pending.
+- **Child confirmation run (val50c, 2026-11-04, final config): 2 contacts in 47 runs (4.3 %)** — so round 17c's 0/15 was partly luck. One contact: walker seen 44 m out, brake 2.1 s after onset, hit at 9.4 km/h (late run_out decision, not detection). Cut-in / lead-brake / patrol regression with the 45° camera not yet rerun.
 - Narrow FOV may miss lateral run-outs close by. Single town, synthetic walkers, one weather.
+
+## Next experiments (reviewer advice, not done yet)
+1. Controlled comparison: baseline vs final, same walkers/speeds/positions/seeds, ≥100 runs each, adults and children separately.
+2. FOV 45° vs 70° vs 120° (lateral run-outs), night, rain, occlusion.
+3. Verify contacts with CARLA's collision sensor; publish plots per config.
 
 ## Files
 - `config/` Autoware parameter overrides and the tracker patch. `code/` scenario, patrol and stats scripts (paths/hosts are local to our bench).
-- `data/SAFETY_rounds.md` rounds table + method notes; `data/change_log.txt` the commits with their measured effect.
+- `data/SAFETY_rounds.md` rounds table + method notes; `data/change_log.txt` the commits with their measured effect; `data/scenarios.jsonl` raw per-run records (field `tag` = round), `data/patrol_legs.jsonl` patrol legs.

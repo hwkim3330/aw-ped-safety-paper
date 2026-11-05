@@ -1,0 +1,2 @@
+final100 (final config, Town01): 100 runs, 2 contacts
+  adult/other: 2/100
